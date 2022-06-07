@@ -1,5 +1,5 @@
 # @hexuhua/librime
 
-A fork of PeterCxy/scel-rime.
+A fork of rime/librime.
 
 Source: [rime/librime](https://github.com/rime/librime)
