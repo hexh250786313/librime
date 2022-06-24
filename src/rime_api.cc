@@ -20,6 +20,7 @@
 #include <rime/service.h>
 #include <rime/setup.h>
 #include <rime/signature.h>
+#include <rime/switches.h>
 #include <rime_api.h>
 
 using namespace rime;
@@ -938,36 +939,57 @@ size_t RimeGetCaretPos(RimeSessionId session_id) {
   return ctx->caret_pos();
 }
 
-Bool RimeSelectCandidate(RimeSessionId session_id, size_t index) {
+static bool do_with_candidate(RimeSessionId session_id, size_t index,
+                              bool (Context::* verb)(size_t index)) {
   an<Session> session(Service::instance().GetSession(session_id));
   if (!session)
-    return False;
-  Context *ctx = session->context();
-  if (!ctx)
-    return False;
-  return Bool(ctx->Select(index));
+        return False;
+    Context *ctx = session->context();
+    if (!ctx)
+        return False;
+    return (ctx->*verb)(index);
+}
+
+static bool do_with_candidate_on_current_page(
+    RimeSessionId session_id, size_t index,
+    bool (Context::* verb)(size_t index)) {
+  an<Session> session(Service::instance().GetSession(session_id));
+  if (!session)
+        return False;
+    Context *ctx = session->context();
+    if (!ctx || !ctx->HasMenu())
+        return False;
+    Schema *schema = session->schema();
+    if (!schema)
+        return False;
+    size_t page_size = (size_t)schema->page_size();
+    if (index >= page_size)
+        return False;
+    const auto& seg(ctx->composition().back());
+    size_t page_start = seg.selected_index / page_size * page_size;
+    return (ctx->*verb)(page_start + index);
+}
+
+
+Bool RimeSelectCandidate(RimeSessionId session_id, size_t index) {
+  return do_with_candidate(session_id, index, &Context::Select);
 }
 
 Bool RimeSelectCandidateOnCurrentPage(RimeSessionId session_id, size_t index) {
-  an<Session> session(Service::instance().GetSession(session_id));
-  if (!session)
-    return False;
-  Context *ctx = session->context();
-  if (!ctx || !ctx->HasMenu())
-    return False;
-  Schema *schema = session->schema();
-  if (!schema)
-    return False;
-  size_t page_size = (size_t)schema->page_size();
-  if (index >= page_size)
-    return False;
-  const auto& seg(ctx->composition().back());
-  size_t page_start = seg.selected_index / page_size * page_size;
-  return Bool(ctx->Select(page_start + index));
+  return do_with_candidate_on_current_page(session_id, index, &Context::Select);
 }
 
 const char* RimeGetVersion() {
   return RIME_VERSION;
+}
+
+Bool RimeDeleteCandidate(RimeSessionId session_id, size_t index) {
+  return do_with_candidate(session_id, index, &Context::DeleteCandidate);
+}
+
+Bool RimeDeleteCandidateOnCurrentPage(RimeSessionId session_id, size_t index) {
+  return do_with_candidate_on_current_page(
+      session_id, index, &Context::DeleteCandidate);
 }
 
 void RimeSetCaretPos(RimeSessionId session_id, size_t caret_pos) {
@@ -989,40 +1011,9 @@ const char* RimeGetStateLabel(RimeSessionId session_id,
   Config* config = session->schema()->config();
   if (!config)
     return nullptr;
-  auto switches = (*config)["switches"];
-  if (!switches.IsList())
-    return nullptr;
-  string query = option_name;
-  for (size_t i = 0; i < switches.size(); ++i) {
-    auto item = switches[i];
-    if (!item.IsMap())
-      continue;
-    auto states = item["states"];
-    if (!states.IsList())
-      continue;
-    auto name = item["name"];
-    if (name.IsValue() && name.ToString() == query) {
-      size_t j = static_cast<size_t>(state);
-      return states.size() > j
-          ? As<ConfigValue>(*states[j])->str().c_str()
-          : nullptr;
-    }
-    auto options = item["options"];
-    if (options.IsList()) {
-      // if the query is a deselected option among the radio group, do not
-      // display its state label; only show the selected option.
-      if (!state)
-        return nullptr;
-      for (size_t j = 0; j < options.size(); ++j) {
-        if (options[j].IsValue() && options[j].ToString() == query) {
-          return states.size() > j
-              ? As<ConfigValue>(*states[j])->str().c_str()
-              : nullptr;
-        }
-      }
-    }
-  }
-  return nullptr;
+  Switches switches(config);
+  an<ConfigValue> label = switches.GetStateLabel(option_name, state);
+  return label ? label->str().c_str() : nullptr;
 }
 
 RIME_API RimeApi* rime_get_api() {
@@ -1115,6 +1106,8 @@ RIME_API RimeApi* rime_get_api() {
     s_api.context_proto = nullptr;
     s_api.status_proto = nullptr;
     s_api.get_state_label = &RimeGetStateLabel;
+    s_api.delete_candidate = &RimeDeleteCandidate;
+    s_api.delete_candidate_on_current_page = &RimeDeleteCandidateOnCurrentPage;
   }
   return &s_api;
 }
